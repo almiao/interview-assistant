@@ -110,6 +110,19 @@ export default function SessionSettingsPopover({
       </div>
 
       <div className="px-3.5 py-3 space-y-3.5 max-h-[min(70vh,560px)] overflow-y-auto">
+        <section>
+          <label htmlFor="assist-answer-style" className="block text-xs font-semibold text-text-primary mb-1.5">回答方式</label>
+          <select
+            id="assist-answer-style"
+            value={config?.assist_answer_style ?? 'outline'}
+            onChange={(event) => { void updateConfigAndRefresh({ assist_answer_style: event.target.value as 'outline' | 'detailed' }) }}
+            className="w-full rounded-lg border border-bg-hover bg-bg-tertiary px-2 py-2 text-xs text-text-primary"
+          >
+            <option value="outline">关键点 / 答题框架（默认）</option>
+            <option value="detailed">详细回答</option>
+          </select>
+          <p className="mt-1.5 text-[10px] text-text-muted">语音和手动提问生效。框架约 60–100 字，先给方向，再补要点；截图与笔试保持原规则。</p>
+        </section>
         {/* ── Think ── */}
         <section className="rounded-xl border border-bg-hover/40 bg-bg-tertiary/25 overflow-hidden">
           <button

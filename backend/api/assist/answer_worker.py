@@ -11,6 +11,7 @@ from core.config import get_config
 from core.session import get_session, conversation_lock
 from services.stt import classify_followup, normalize_transcription_for_analysis
 from services.llm import (
+    PROMPT_MODE_ALGORITHM_SCREEN,
     PROMPT_MODE_ASR_REALTIME,
     PROMPT_MODE_MANUAL_TEXT,
     PROMPT_MODE_SERVER_SCREEN,
@@ -627,8 +628,16 @@ def _max_tokens_for_prompt(
     cfg,
     *,
     high_churn_short_answer: bool = False,
+    question_text: str = "",
 ) -> int:
     base_limit = max(1, int(getattr(cfg, "max_tokens", 4096) or 4096))
+    if prompt_mode in (PROMPT_MODE_ASR_REALTIME, PROMPT_MODE_MANUAL_TEXT) and re.search(
+        r"手写|编写|实现|写(?:一[个段份下])?(?:代码|SQL)|(?:给出|提供|完整|可运行|可执行).{0,12}(?:代码|SQL)|\bimplement\b|\bwrite\b.{0,50}\b(?:code|function|class|sql)\b",
+        question_text, re.IGNORECASE,
+    ):
+        return base_limit
+    if prompt_mode in (PROMPT_MODE_ASR_REALTIME, PROMPT_MODE_MANUAL_TEXT) and getattr(cfg, "assist_answer_style", "outline") == "outline":
+        return min(base_limit, 320)
     if prompt_mode == PROMPT_MODE_ASR_REALTIME:
         cap = (
             int(getattr(cfg, "assist_realtime_high_churn_max_tokens", 420) or 420)
@@ -662,6 +671,8 @@ def prompt_mode_for_task(
     manual_input: bool,
     written_exam: bool = False,
 ) -> PromptMode:
+    if source == "algorithm_screen":
+        return PROMPT_MODE_ALGORITHM_SCREEN
     if written_exam:
         return PROMPT_MODE_WRITTEN_EXAM
     if (source or "").startswith("server_screen_"):
@@ -680,7 +691,7 @@ def process_question_parallel(
 ):
     question_text, image, manual_input, source, meta = task
     exam_preflight_id = str(meta.get("exam_preflight_id") or "") if meta.get("exam_preflight") else ""
-    qa_id = f"qa-{seq}-{int(time.time() * 1000)}"
+    qa_id = str(meta.get("algorithm_qa_id") or f"qa-{seq}-{int(time.time() * 1000)}")
 
     def _broadcast(data: dict) -> None:
         if exam_preflight_id:
@@ -722,7 +733,7 @@ def process_question_parallel(
         deps.mark_seq_skipped(seq)
         return
 
-    written_exam = bool(getattr(cfg, "written_exam_mode", False))
+    written_exam = bool(getattr(cfg, "written_exam_mode", False)) and source != "algorithm_screen"
     written_exam_think = bool(getattr(cfg, "written_exam_think", False))
     prompt_mode = prompt_mode_for_task(source, manual_input, written_exam=written_exam)
     high_churn_short_answer = bool(meta.get("high_churn_short_answer", False))
@@ -769,7 +780,16 @@ def process_question_parallel(
 
     with conversation_lock:
         session_ref = get_session()
-        if written_exam:
+        if source == "algorithm_screen":
+            # 仅携带最近的算法答案，避免语音问答污染截图题或带入旧图。
+            previous = [qa for qa in session_ref.qa_pairs if qa.source == "algorithm_screen"][-1:]
+            base_messages = [
+                {"role": "assistant", "content": "上一轮算法解答（仅供同题补充条件时参考）：\n" + qa.answer[:6000]}
+                for qa in previous
+            ]
+            history_stats = {"messages": len(base_messages), "history_messages": len(base_messages)}
+            written_followup_context = ""
+        elif written_exam:
             base_messages = []
             history_stats = {"messages": 0, "history_messages": 0, "stripped_images": 0}
             written_followup_context = (
@@ -913,6 +933,7 @@ def process_question_parallel(
             is_followup=is_followup,
             followup_needs_bridge=followup_needs_bridge,
         ),
+        answer_style=getattr(cfg, "assist_answer_style", "outline"),
     )
 
     messages_for_llm = base_messages + [{"role": "user", "content": user_for_llm}]
@@ -991,7 +1012,11 @@ def process_question_parallel(
             deps.error_logger.warning("broadcast kb_hits failed: %s", exc)
 
     raw_full_answer = ""
-    stream_sanitizer = create_answer_stream_sanitizer(prompt_mode)
+    stream_sanitizer = create_answer_stream_sanitizer(
+        prompt_mode,
+        low_latency=prompt_mode in (PROMPT_MODE_ASR_REALTIME, PROMPT_MODE_MANUAL_TEXT)
+        and getattr(cfg, "assist_answer_style", "outline") == "outline",
+    )
     full_think = ""
     token_prompt_delta = 0
     token_completion_delta = 0
@@ -1008,7 +1033,7 @@ def process_question_parallel(
     # may arrive seconds before any usable code/answer text.
     first_token_mono: Optional[float] = None
     chunk_buffer: list[str] = []
-    batch_size = 5
+    batch_size = 1 if getattr(cfg, "assist_answer_style", "outline") == "outline" else 5
     try:
         # Precedence: one-shot meta override > written-exam screen think > model/global.
         if "override_think_mode" in meta and meta.get("override_think_mode") is not None:
@@ -1028,6 +1053,7 @@ def process_question_parallel(
                 prompt_mode,
                 cfg,
                 high_churn_short_answer=high_churn_short_answer,
+                question_text=question_text,
             ),
         ):
             if deps.abort_check():

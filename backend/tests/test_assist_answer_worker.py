@@ -44,7 +44,34 @@ def _cfg():
         kb_trigger_modes=[],
         assist_realtime_max_tokens=720,
         assist_realtime_high_churn_max_tokens=320,
+        assist_answer_style="detailed",
     )
+
+
+def test_algorithm_screen_keeps_request_id_and_excludes_voice_history(monkeypatch):
+    session = get_session()
+    session.add_user_message('语音问题：Redis 怎么持久化？')
+    session.add_assistant_message('语音答案：使用 AOF')
+    session.add_qa('上一张算法截图', '旧算法代码', source='algorithm_screen')
+    captured = {}
+    broadcasts = []
+
+    def fake_stream(_model, messages, **kwargs):
+        captured['messages'] = messages
+        captured['tokens'] = kwargs['override_max_tokens']
+        yield ('text', '使用哈希表。\n```java\nclass Solution {}\n```')
+
+    monkeypatch.setattr(answer_worker, 'chat_stream_single_model', fake_stream)
+    answer_worker.process_question_parallel(
+        ('截屏算法题 · Java', 'data:image/png;base64,image', True, 'algorithm_screen', {'algorithm_qa_id': 'algorithm-test'}),
+        seq=0, model_idx=0, sess_v=0, deps=_deps(broadcasts=broadcasts),
+    )
+    assert captured['tokens'] == 4096
+    assert 'Redis' not in str(captured['messages'])
+    assert '旧算法代码' in str(captured['messages'])
+    assert captured['messages'][-1]['content'][1]['image_url']['url'].endswith('image')
+    assert next(e for e in broadcasts if e['type'] == 'answer_start')['id'] == 'algorithm-test'
+    assert next(e for e in broadcasts if e['type'] == 'answer_done')['id'] == 'algorithm-test'
 
 
 def _deps(
@@ -1382,7 +1409,7 @@ def test_process_question_parallel_flushes_batched_chunks_before_error(
         yield ("text", "chunk-2")
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(answer_worker, "create_answer_stream_sanitizer", lambda _mode: PassthroughSanitizer())
+    monkeypatch.setattr(answer_worker, "create_answer_stream_sanitizer", lambda _mode, **_kwargs: PassthroughSanitizer())
     monkeypatch.setattr(answer_worker, "chat_stream_single_model", fake_stream)
 
     answer_worker.process_question_parallel(

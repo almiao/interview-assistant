@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   minimizeWindow: () => ipcRenderer.invoke('minimize-window'),
   quitApp: () => ipcRenderer.invoke('quit-app'),
   showWindow: () => ipcRenderer.invoke('show-window'),
+  setCompactMode: (enabled) => ipcRenderer.invoke('set-compact-mode', enabled),
   getShortcuts: () => ipcRenderer.invoke('get-shortcuts'),
   updateShortcuts: (shortcuts) => ipcRenderer.invoke('update-shortcuts', shortcuts),
   resetShortcuts: () => ipcRenderer.invoke('reset-shortcuts'),

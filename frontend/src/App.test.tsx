@@ -13,6 +13,7 @@ const apiMock = vi.hoisted(() => ({
   kbStatus: vi.fn(),
   updateConfig: vi.fn(),
   askFromServerScreen: vi.fn(),
+  askAlgorithmScreen: vi.fn(),
 }))
 
 function deferred<T>() {
@@ -81,6 +82,7 @@ describe('App bootstrap', () => {
     apiMock.checkModelsHealth.mockResolvedValue(undefined)
     apiMock.updateConfig.mockResolvedValue({ ok: true })
     apiMock.askFromServerScreen.mockResolvedValue({ ok: true })
+    apiMock.askAlgorithmScreen.mockResolvedValue({ ok: true, qa_id: 'algorithm-test' })
     apiMock.kbStatus.mockResolvedValue({
       enabled: false,
       total_docs: 0,
@@ -89,6 +91,17 @@ describe('App bootstrap', () => {
       asr_deadline_ms: 80,
       deps: { docx: false, pdf: false, ocr: false, vision: false },
     })
+  })
+
+  it('defaults to outline answers and saves the detailed option from session settings', async () => {
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: '打开会场设置' }))
+    const style = screen.getByLabelText('回答方式')
+    expect(style).toHaveValue('outline')
+    apiMock.getConfig.mockResolvedValue({ ...useInterviewStore.getState().config, assist_answer_style: 'detailed' })
+    fireEvent.change(style, { target: { value: 'detailed' } })
+    await waitFor(() => expect(apiMock.updateConfig).toHaveBeenCalledWith({ assist_answer_style: 'detailed' }))
+    await waitFor(() => expect(style).toHaveValue('detailed'))
   })
 
   it('renders the init error view when config bootstrap fails', async () => {
@@ -200,6 +213,44 @@ describe('App bootstrap', () => {
 
     const trigger = await screen.findByRole('button', { name: /连接失败：401 unauthorized/ })
     expect(trigger).toHaveAttribute('title', expect.stringContaining('401 unauthorized'))
+  })
+
+  it('captures once, keeps the action in compact mode, and unlocks after the Java answer', async () => {
+    const pending = deferred<{ ok: boolean; qa_id: string }>()
+    apiMock.askAlgorithmScreen.mockReturnValueOnce(pending.promise)
+    render(<App />)
+    const button = await screen.findByRole('button', { name: '截屏解题' })
+    fireEvent.click(button)
+    fireEvent.click(button)
+    expect(apiMock.askAlgorithmScreen).toHaveBeenCalledTimes(1)
+    expect(button).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: '进入精简模式' }))
+    expect(await screen.findByRole('region', { name: '精简视图' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '截屏' })).toBeDisabled()
+    await act(async () => pending.resolve({ ok: true, qa_id: 'algorithm-test' }))
+    expect(screen.getByRole('button', { name: '截屏' })).toBeDisabled()
+    act(() => useInterviewStore.getState().finalizeAnswer('algorithm-test', '截屏算法题 · Java', '哈希表去重。\n```java\nclass Solution {}\n```', '', 'vision'))
+    await waitFor(() => expect(screen.getByRole('button', { name: '截屏' })).toBeEnabled())
+    expect(screen.getByLabelText('核心答案')).toHaveTextContent('class Solution')
+    expect(screen.getByRole('region', { name: '精简视图' })).toBeVisible()
+  })
+
+  it('shows capture errors in compact mode and allows a retry', async () => {
+    apiMock.askAlgorithmScreen.mockRejectedValueOnce(new Error('缺少屏幕录制权限'))
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: '进入精简模式' }))
+    await screen.findByRole('region', { name: '精简视图' })
+    fireEvent.click(screen.getByRole('button', { name: '截屏' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('缺少屏幕录制权限')
+    expect(screen.getByRole('button', { name: '截屏' })).toBeEnabled()
+  })
+
+  it('unlocks a queued screenshot when the session is cleared', async () => {
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: '截屏解题' }))
+    await waitFor(() => expect(screen.getByText('识题解答中…')).toBeVisible())
+    act(() => useInterviewStore.getState().clearSession())
+    await waitFor(() => expect(screen.getByRole('button', { name: '截屏解题' })).toBeEnabled())
   })
 
   it('prevents duplicate mobile server screen asks while one is in flight', async () => {

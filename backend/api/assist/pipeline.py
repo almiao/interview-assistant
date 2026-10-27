@@ -25,6 +25,8 @@ from services.stt import (
     transcribe_with_fallback,
     transcription_for_publish,
     postprocess_interview_transcription,
+    transcription_significant_len,
+    is_interview_boilerplate_text,
 )
 from api.common import get_model_health
 from api.realtime.ws import broadcast
@@ -519,6 +521,11 @@ def _reset_answer_state():
     global _pending, _in_flight_tasks, _commit_buffer, _skipped_commit_seqs, _next_commit_seq, _task_session_version, _latest_asr_turn_id, _recent_asr_turn_monos
     with _asr_state_lock:
         with _dispatch_lock:
+            cancelled_algorithm_ids = {
+                str(task[4]["algorithm_qa_id"])
+                for task in ([item[0] for item in _pending] + [item[1] for item in _in_flight_tasks.values()])
+                if task[3] == "algorithm_screen" and task[4].get("algorithm_qa_id")
+            }
             _pending.clear()
             _in_flight_tasks.clear()
             _latest_asr_turn_id = 0
@@ -532,6 +539,8 @@ def _reset_answer_state():
         _commit_buffer.clear()
         _skipped_commit_seqs.clear()
         _next_commit_seq = next_commit_seq
+    for qa_id in cancelled_algorithm_ids:
+        broadcast({"type": "answer_cancelled", "id": qa_id})
 
 
 def cancel_answer_work(reset_session_data: bool = False):
@@ -661,6 +670,7 @@ def _begin_asr_turn() -> int:
         )
         turn_id = _latest_asr_turn_id
     for seq in skipped:
+        _ilog.info("ASR_TASK_SKIPPED seq=%d reason=superseded_by_new_turn turn=%d", seq, turn_id)
         _mark_seq_skipped(seq)
     return turn_id
 
@@ -691,6 +701,7 @@ def _should_interrupt_stale_asr(cfg=None) -> bool:
 def submit_answer_task(task: TaskPayload) -> bool:
     global _next_submit_seq
     if pick_model_index(task, set()) is None:
+        _ilog.info("ANSWER_TASK_REJECTED reason=no_available_model source=%s question=%r", task[3], task[0])
         broadcast(
             {
                 "type": "error",
@@ -699,6 +710,9 @@ def submit_answer_task(task: TaskPayload) -> bool:
         )
         return False
     with _dispatch_lock:
+        capture_generation = _task_meta(task).get("capture_generation")
+        if capture_generation is not None and capture_generation != _capture_generation():
+            return False
         seq = _next_submit_seq
         _next_submit_seq += 1
         tv = _task_session_version
@@ -834,6 +848,7 @@ def _try_dispatch():
                     config_snapshot = copy.deepcopy(cfg)
                     model_cfg_snapshot = copy.deepcopy(config_snapshot.models[selected_idx])
         if step.skipped_seq is not None:
+            _ilog.info("ASR_TASK_SKIPPED seq=%d reason=stale_asr_turn", step.skipped_seq)
             _mark_seq_skipped(step.skipped_seq)
             continue
         if step.claim is None:
@@ -1236,6 +1251,21 @@ def _flush_worker():
             _elog.error("flush_worker error: %s", e, exc_info=True)
 
 
+def _audio_rms_peak(audio) -> tuple[float, float]:
+    """Return (rms, peak) for ASR diagnostics; tolerant to int16/float input."""
+    if audio is None or len(audio) == 0:
+        return 0.0, 0.0
+    data = np.asarray(audio)
+    if data.dtype == np.int16:
+        data = data.astype(np.float32) / 32768.0
+    else:
+        data = data.astype(np.float32, copy=False)
+    data = np.nan_to_num(data, copy=False)
+    if data.size == 0:
+        return 0.0, 0.0
+    return float(np.sqrt(np.mean(data * data))), float(np.max(np.abs(data)))
+
+
 def _interviewer_asr_worker(runtime: _InterviewerRuntime, session, cfg) -> None:
     while True:
         if runtime.drain_event.is_set() and _interviewer_segment_backlog(runtime) == 0:
@@ -1257,25 +1287,40 @@ def _interviewer_asr_worker(runtime: _InterviewerRuntime, session, cfg) -> None:
                 scope="interviewer",
                 fallback_on_empty_remote=True,
             )
+            raw_text = text
             text = postprocess_interview_transcription(text)
             stt_ms = (time.monotonic() - t0) * 1000
             pub = transcription_for_publish(
                 text,
                 getattr(current_cfg, "transcription_min_sig_chars", 2),
             )
+            rms, peak = _audio_rms_peak(segment.audio)
             _ilog.info(
-                "INTERVIEWER_ASR_SEGMENT flush_reason=%s queue_delay_ms=%.0f raw=%.1fs stt=%.0fms ratio=%.2f publish_chars=%d",
+                "INTERVIEWER_ASR_SEGMENT flush_reason=%s queue_delay_ms=%.0f raw=%.1fs stt=%.0fms ratio=%.2f rms=%.4f peak=%.3f publish_chars=%d",
                 segment.flush_reason,
                 queue_delay_ms,
                 segment.audio_sec,
                 stt_ms,
                 (stt_ms / 1000.0 / segment.audio_sec) if segment.audio_sec > 0 else 0.0,
+                rms,
+                peak,
                 len(pub) if pub else 0,
             )
             if pub:
                 _ilog.info("ASR publish=%r", pub[:120])
                 _append_transcription_fragment(
                     current_cfg, session, pub, time.monotonic(), False
+                )
+            else:
+                reason = (
+                    "empty_asr_text" if not (text or "").strip()
+                    else "boilerplate" if is_interview_boilerplate_text(text)
+                    else "below_min_significant_chars"
+                )
+                _ilog.info(
+                    "ASR_FILTER stage=publish reason=%s significant_chars=%d min_sig_chars=%d raw_text=%r text=%r",
+                    reason, transcription_significant_len(text),
+                    getattr(current_cfg, "transcription_min_sig_chars", 2), raw_text, text,
                 )
         except Exception as e:
             _elog.error("interviewer ASR segment error: %s", e, exc_info=True)

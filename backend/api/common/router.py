@@ -2,12 +2,12 @@ import socket
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Literal
 
 import requests
 from fastapi import APIRouter, UploadFile, File, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, Field
 
 from core.auth import get_token, is_auth_disabled, is_loopback_host
 from core.config import (
@@ -60,6 +60,7 @@ class ConfigUpdate(BaseModel):
     whisper_model: Optional[str] = None
     whisper_language: Optional[str] = None
     whisper_preload: Optional[bool] = None
+    stt_fallback_enabled: Optional[bool] = None
     doubao_stt_app_id: Optional[str] = None
     doubao_stt_access_token: Optional[str] = None
     doubao_stt_api_key: Optional[str] = None
@@ -77,6 +78,8 @@ class ConfigUpdate(BaseModel):
     assist_vad_max_speech_sec: Optional[float] = None
     assist_vad_min_speech_sec: Optional[float] = None
     assist_asr_confirm_window_sec: Optional[float] = None
+    assist_asr_late_constraint_grace_sec: Optional[float] = Field(default=None, ge=0.0, le=3.0)
+    assist_answer_style: Optional[Literal['outline', 'detailed']] = None
     assist_asr_group_max_wait_sec: Optional[float] = None
     assist_asr_interrupt_running: Optional[bool] = None
     assist_high_churn_short_answer: Optional[bool] = None

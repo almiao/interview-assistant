@@ -1,6 +1,7 @@
 """LLM package: prompt builders + streaming generation."""
 
 from .prompts import (
+    PROMPT_MODE_ALGORITHM_SCREEN,
     PROMPT_MODE_ASR_REALTIME,
     PROMPT_MODE_MANUAL_TEXT,
     PROMPT_MODE_SERVER_SCREEN,
@@ -34,6 +35,7 @@ from .streaming import (
 )
 
 __all__ = [
+    "PROMPT_MODE_ALGORITHM_SCREEN",
     "PROMPT_MODE_ASR_REALTIME",
     "PROMPT_MODE_MANUAL_TEXT",
     "PROMPT_MODE_SERVER_SCREEN",

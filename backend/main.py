@@ -110,9 +110,19 @@ def _preload_stt():
         if not is_remote:
             ws.broadcast({"type": "stt_status", "loaded": False, "loading": True, "provider": cfg.stt_provider})
         engine.load_model()
-        loaded = bool(engine.is_loaded) if not is_remote else True
-        _log.info("STT preload done provider=%s loaded=%s", cfg.stt_provider, loaded)
-        ws.broadcast({"type": "stt_status", "loaded": loaded, "loading": False, "provider": cfg.stt_provider})
+        if is_remote:
+            # 远端引擎没有本地模型可加载；is_configured 只代表凭据已填写。
+            # 连通性（证书/鉴权/配额）要到第一次请求才知道，日志不能写成 loaded。
+            ready = bool(getattr(engine, "is_configured", engine.is_loaded))
+            _log.info(
+                "STT preload done provider=%s configured=%s (remote; connection verified on first request)",
+                cfg.stt_provider,
+                ready,
+            )
+        else:
+            ready = bool(engine.is_loaded)
+            _log.info("STT preload done provider=%s loaded=%s", cfg.stt_provider, ready)
+        ws.broadcast({"type": "stt_status", "loaded": ready, "loading": False, "provider": cfg.stt_provider})
     except Exception as e:
         _log.error("STT preload failed: %s", e, exc_info=True)
         ws.broadcast({"type": "stt_status", "loaded": False, "loading": False, "provider": get_config().stt_provider, "error": str(e)})

@@ -1,6 +1,7 @@
 """Interview assist HTTP routes."""
 
 from typing import Optional
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -21,6 +22,7 @@ from .pipeline import (
     submit_answer_task,
     unpause_interview,
     _bump_generation,
+    _capture_generation,
 )
 
 router = APIRouter()
@@ -191,6 +193,36 @@ async def api_ask_from_server_screen(body: Optional[ServerScreenQuestion] = None
     if not queued:
         raise HTTPException(503, "没有可用的识图模型，请检查启用状态与 API Key")
     return {"ok": True}
+
+
+@router.post("/ask-algorithm-screen")
+async def api_ask_algorithm_screen():
+    from services.capture.screen_capture import ScreenCaptureError, capture_algorithm_screen_data_url
+    from services.llm import has_vision_model
+
+    if not has_vision_model():
+        raise HTTPException(400, "截屏解题需要至少一个已启用且配置 API Key 的识图模型")
+    qa_id = f"algorithm-{uuid4().hex}"
+    generation = _capture_generation()
+    task = ("截屏算法题 · Java", "pending", True, "algorithm_screen", {
+        "algorithm_qa_id": qa_id, "capture_generation": generation,
+    })
+    if pick_model_index(task, set()) is None:
+        raise HTTPException(400, "没有可用的识图模型，请检查启用状态与 API Key")
+    try:
+        # 采集运行在线程池，不能阻塞 WebSocket 和语音处理的事件循环。
+        image = await run_in_threadpool(capture_algorithm_screen_data_url)
+    except ScreenCaptureError as e:
+        raise HTTPException(503, str(e)) from e
+    if generation != _capture_generation():
+        raise HTTPException(409, "本次截屏已取消，请重新截屏")
+    task = (task[0], image, task[2], task[3], task[4])
+    # 与语音回答共用调度队列，但不取消在途语音任务。
+    if not submit_answer_task(task):
+        if generation != _capture_generation():
+            raise HTTPException(409, "本次截屏已取消，请重新截屏")
+        raise HTTPException(503, "没有可用的识图模型，请检查启用状态与 API Key")
+    return {"ok": True, "qa_id": qa_id}
 
 
 @router.post("/capture-server-screen")

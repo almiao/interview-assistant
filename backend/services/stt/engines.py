@@ -24,6 +24,27 @@ try:
 except ImportError:
     websocket = None
 
+try:
+    import certifi
+except ImportError:
+    certifi = None
+
+
+def _websocket_sslopt() -> dict:
+    """websocket-client 默认不加载 certifi。
+
+    部分 Python 发行版（例如 python.org 的 framework 构建）没有系统 CA
+    文件，此时 ssl 默认信任库为空，豆包 WSS 会报
+    ``CERTIFICATE_VERIFY_FAILED: self-signed certificate in certificate chain``。
+    显式传入 certifi 的 CA bundle 即可，同时仍保持证书校验开启。
+    """
+    if certifi is None:
+        return {}
+    try:
+        return {"ca_certs": certifi.where()}
+    except Exception:
+        return {}
+
 
 # ---------------------------------------------------------------------------
 # Shared audio helpers
@@ -147,7 +168,7 @@ class DoubaoSTT:
         self.app_id = app_id or ""
         self.access_token = access_token or ""
         self.api_key = api_key or ""
-        self.resource_id = resource_id or "volc.bigasr.sauc.duration"
+        self.resource_id = resource_id or "volc.seedasr.sauc.duration"
         self.boosting_table_id = boosting_table_id or ""
 
     @property
@@ -155,8 +176,17 @@ class DoubaoSTT:
         return "doubao"
 
     @property
-    def is_loaded(self) -> bool:
+    def is_configured(self) -> bool:
+        """远端引擎没有本地模型；“就绪”只表示凭据已填写。
+
+        真正的连通性（TLS/鉴权/配额）要到第一次 transcribe 才能知道，
+        因此启动日志用 configured，而不是 loaded。
+        """
         return bool(self.api_key or self.access_token)
+
+    @property
+    def is_loaded(self) -> bool:
+        return self.is_configured
 
     @property
     def is_loading(self) -> bool:
@@ -220,6 +250,7 @@ class DoubaoSTT:
                 DOUBAO_ASR_WS_URL,
                 header=[f"{k}: {v}" for k, v in self._build_headers().items()],
                 timeout=10,
+                sslopt=_websocket_sslopt(),
             )
             try:
                 ws.send_binary(first_frame)
@@ -283,8 +314,12 @@ class GenericHTTPSTT:
         return "generic"
 
     @property
-    def is_loaded(self) -> bool:
+    def is_configured(self) -> bool:
         return bool(self.api_base_url and self.api_key and self.model)
+
+    @property
+    def is_loaded(self) -> bool:
+        return self.is_configured
 
     @property
     def is_loading(self) -> bool:

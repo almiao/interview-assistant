@@ -43,6 +43,7 @@ export interface AppConfig {
   whisper_model: string
   whisper_language: string
   whisper_preload: boolean
+  stt_fallback_enabled?: boolean
   doubao_stt_app_id: string
   doubao_stt_access_token: string
   doubao_stt_api_key: string
@@ -82,6 +83,7 @@ export interface AppConfig {
   transcription_min_sig_chars?: number
   /** 多段 ASR 合并：上一段结束后静默超过该秒数再送出；0=每段立即发送 */
   assist_transcription_merge_gap_sec?: number
+  assist_answer_style?: 'outline' | 'detailed'
   /** 从首段 ASR 起最长等待（秒），超时强制送出 */
   assist_transcription_merge_max_sec?: number
   /** 主链路单段最长语音（秒），避免连续讲话攒成超长 ASR 请求 */

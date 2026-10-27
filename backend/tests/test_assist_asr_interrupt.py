@@ -272,11 +272,13 @@ def test_build_system_prompt_includes_high_churn_short_answer_instructions():
         manual_input=False,
         mode="asr_realtime",
         high_churn_short_answer=False,
+        answer_style="detailed",
     )
     short = build_system_prompt(
         manual_input=False,
         mode="asr_realtime",
         high_churn_short_answer=True,
+        answer_style="detailed",
     )
 
     assert "高 churn 模式" not in normal

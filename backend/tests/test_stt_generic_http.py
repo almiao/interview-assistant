@@ -79,7 +79,7 @@ def test_generic_http_stt_extracts_nested_result_text(monkeypatch):
     assert engine.transcribe(np.zeros(100, dtype=np.float32), sample_rate=16000) == "你好。"
 
 
-def test_transcribe_with_fallback_treats_empty_remote_text_as_failure(monkeypatch):
+def test_transcribe_with_fallback_falls_back_on_empty_remote_text_without_tripping_circuit(monkeypatch):
     import core.config as core_config
     monkeypatch.setattr(
         core_config,
@@ -107,7 +107,9 @@ def test_transcribe_with_fallback_treats_empty_remote_text_as_failure(monkeypatc
 
     assert text == "fallback text"
     assert calls["fallback"] == 1
-    assert calls["circuit_failure"] == 1
+    # 空文本（常见于静音/纯噪声片段）不应计入熔断，否则会把“没人说话”
+    # 误判成“远程 ASR 不可用”，让后续真实语音也走降级。
+    assert calls["circuit_failure"] == 0
     assert any(e.get("type") == "stt_fallback" for e in calls["broadcast"])
 
 
@@ -243,7 +245,7 @@ def test_transcribe_with_fallback_can_force_fallback_on_short_empty_remote_audio
 
     assert text == "fallback text"
     assert calls["fallback"] == 1
-    assert calls["circuit_failure"] == 1
+    assert calls["circuit_failure"] == 0
 
 
 def test_transcribe_with_fallback_retries_empty_interviewer_remote_with_tail_pad(monkeypatch):
@@ -334,7 +336,8 @@ def test_transcribe_with_fallback_does_not_tail_pad_retry_candidate_empty_remote
     assert text == "fallback text"
     assert calls["audio_lengths"] == [32000]
     assert calls["fallback"] == 1
-    assert calls["circuit_failure"] == 1
+    # 空文本不再计入熔断（静音/噪声片段不应被当成引擎故障）。
+    assert calls["circuit_failure"] == 0
 
 
 def test_transcribe_with_fallback_retries_remote_once_before_fallback(monkeypatch):
@@ -639,3 +642,109 @@ def test_whisper_engine_cache_reuses_same_asr_and_splits_different_asr(monkeypat
     assert candidate_different is not interviewer
     assert candidate_different.model_size == "tiny"
     assert candidate_different.language == "en"
+
+
+def _fallback_disabled_cfg(**overrides):
+    values = {
+        "stt_provider": "doubao",
+        "whisper_model": "base",
+        "whisper_language": "auto",
+        "stt_fallback_enabled": False,
+    }
+    values.update(overrides)
+    return type("Cfg", (), values)()
+
+
+def test_transcribe_with_fallback_disabled_returns_empty_without_whisper(monkeypatch):
+    import core.config as core_config
+
+    monkeypatch.setattr(core_config, "get_config", lambda: _fallback_disabled_cfg())
+
+    calls = {"remote": 0, "fallback": 0}
+
+    class _RemoteEngine:
+        def transcribe(self, audio, sample_rate=16000, position="", language=""):
+            calls["remote"] += 1
+            return ""
+
+    monkeypatch.setattr(
+        stt_factory,
+        "get_stt_engine",
+        lambda provider=None, model_size=None, language=None: _RemoteEngine(),
+    )
+    # 熔断器打开时也不再跳去 whisper：降级关闭后始终先尝试主引擎。
+    monkeypatch.setattr(stt_factory, "_call_circuit_open", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        stt_factory,
+        "_call_whisper_transcribe",
+        lambda *args, **kwargs: calls.__setitem__("fallback", calls["fallback"] + 1) or "fallback text",
+    )
+    monkeypatch.setattr(
+        stt_factory,
+        "_call_whisper_transcribe_fallback",
+        lambda *args, **kwargs: calls.__setitem__("fallback", calls["fallback"] + 1) or "fallback text",
+    )
+    monkeypatch.setattr(stt_factory, "_is_whisper_engine_loaded", lambda *_args, **_kwargs: True)
+    _patch_broadcast(monkeypatch, [])
+
+    text = stt_factory.transcribe_with_fallback(
+        # > REMOTE_EMPTY_RETRY_MAX_AUDIO_SEC，避免走 interviewer 的补尾重试
+        np.full(16000 * 8, 0.1, dtype=np.float32),
+        16000,
+        provider="doubao",
+        scope="interviewer",
+        fallback_on_empty_remote=True,
+    )
+
+    assert text == ""
+    assert calls["remote"] == 1
+    assert calls["fallback"] == 0
+
+
+def test_transcribe_with_fallback_disabled_returns_empty_on_remote_error(monkeypatch):
+    import core.config as core_config
+
+    monkeypatch.setattr(core_config, "get_config", lambda: _fallback_disabled_cfg())
+
+    class _RemoteEngine:
+        def transcribe(self, audio, sample_rate=16000, position="", language=""):
+            raise RuntimeError("401 unauthorized")
+
+    calls = {"fallback": 0, "circuit_failure": 0}
+
+    monkeypatch.setattr(
+        stt_factory,
+        "get_stt_engine",
+        lambda provider=None, model_size=None, language=None: _RemoteEngine(),
+    )
+    monkeypatch.setattr(stt_factory, "_call_circuit_open", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        stt_factory,
+        "_call_circuit_record_failure",
+        lambda *_args, **_kwargs: calls.__setitem__("circuit_failure", calls["circuit_failure"] + 1),
+    )
+    monkeypatch.setattr(stt_factory, "_call_circuit_reset", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        stt_factory,
+        "_call_whisper_transcribe",
+        lambda *args, **kwargs: calls.__setitem__("fallback", calls["fallback"] + 1) or "fallback text",
+    )
+    monkeypatch.setattr(
+        stt_factory,
+        "_call_whisper_transcribe_fallback",
+        lambda *args, **kwargs: calls.__setitem__("fallback", calls["fallback"] + 1) or "fallback text",
+    )
+    monkeypatch.setattr(stt_factory, "_is_whisper_engine_loaded", lambda *_args, **_kwargs: True)
+    _patch_broadcast(monkeypatch, [])
+
+    text = stt_factory.transcribe_with_fallback(
+        np.full(16000 * 2, 0.1, dtype=np.float32),
+        16000,
+        provider="doubao",
+        scope="interviewer",
+    )
+
+    assert text == ""
+    assert calls["fallback"] == 0
+    # 真正的请求失败仍然计入熔断，只是不再自动降级。
+    assert calls["circuit_failure"] == 1

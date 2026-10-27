@@ -11,6 +11,8 @@ import queue
 import sys
 import threading
 import time
+from types import SimpleNamespace
+from unittest.mock import Mock
 from pathlib import Path
 
 import pytest
@@ -21,6 +23,34 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 pipeline = importlib.import_module("api.assist.pipeline")
+
+
+@pytest.mark.parametrize(('text', 'reason'), [
+    ('', 'empty_asr_text'),
+    ('Redis是什么？', 'below_min_significant_chars'),
+    ('欢迎参与AI面试，如果音量过大或过小请调整你的设备音量', 'boilerplate'),
+])
+def test_interviewer_filtered_text_and_reason_are_logged(monkeypatch, text, reason):
+    runtime = pipeline._new_interviewer_runtime()
+    runtime.segment_queue.put(pipeline.InterviewerSegment(
+        audio=np.ones(1600, dtype=np.float32), sample_rate=16000,
+        started_mono=1.0, ended_mono=1.1, audio_sec=0.1,
+        flush_reason='silence', capture_is_loopback=True,
+    ))
+    runtime.drain_event.set()
+    cfg = SimpleNamespace(position='', language='Python', transcription_min_sig_chars=13)
+    logger = Mock()
+    append = Mock()
+    monkeypatch.setattr(pipeline, 'get_config', lambda: cfg)
+    monkeypatch.setattr(pipeline, 'transcribe_with_fallback', lambda *_a, **_kw: text)
+    monkeypatch.setattr(pipeline, '_ilog', logger)
+    monkeypatch.setattr(pipeline, '_append_transcription_fragment', append)
+    monkeypatch.setattr(pipeline, 'broadcast', lambda _: None)
+    pipeline._interviewer_asr_worker(runtime, SimpleNamespace(), cfg)
+    messages = [call.args[0] % call.args[1:] for call in logger.info.call_args_list]
+    assert any('ASR_FILTER stage=publish' in message and f'reason={reason}' in message
+               and f'raw_text={text!r}' in message and 'min_sig_chars=13' in message for message in messages)
+    append.assert_not_called()
 
 
 # ---------- 共享 fakes -------------------------------------------------------

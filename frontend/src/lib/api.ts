@@ -279,6 +279,8 @@ export const api = {
   /** 服务端截取本机主屏左半幅 + VL 写码（手机端用，不经过手机截图 API） */
   askFromServerScreen: () =>
     request('/api/ask-from-server-screen', { method: 'POST', body: '{}' }),
+  askAlgorithmScreen: () =>
+    request<{ ok: boolean; qa_id: string }>('/api/ask-algorithm-screen', { method: 'POST', body: '{}' }),
   captureServerScreen: () =>
     request<{ ok: boolean; image: string }>('/api/capture-server-screen', { method: 'POST', body: '{}' }),
   askFromServerScreens: (images: string[]) =>

@@ -104,6 +104,9 @@ class AppConfig(BaseModel):
     whisper_language: str = "auto"
     # 启动时预加载 whisper 降级模型（远程 ASR 为主引擎时，~300MB 内存换更快降级）
     whisper_preload: bool = False
+    # 远程 ASR（豆包/通用）失败或返回空时是否自动降级到本地 Whisper。
+    # 关闭后只使用所选引擎：失败直接返回空，不会静默切换引擎导致识别质量下降。
+    stt_fallback_enabled: bool = True
     # 豆包语音识别 API（当 stt_provider=doubao 时使用），使用小时版 + WebSocket 双流式
     doubao_stt_app_id: str = ""
     doubao_stt_access_token: str = ""
@@ -152,7 +155,7 @@ class AppConfig(BaseModel):
     # 转写广播/入历史/自动答题：去标点后的有效字符（中英数字）至少为该值；过滤「嗯」等
     transcription_min_sig_chars: int = 2
     # 实时辅助：多段 ASR 合并后再写入转写/触发自动答题。上一段结束后若超过该秒数仍无新段则送出；0=关闭合并（恢复每段立即发送）
-    assist_transcription_merge_gap_sec: float = 2.0
+    assist_transcription_merge_gap_sec: float = 0.0
     # 从第一段 ASR 起最长等待（秒），超时强制送出，避免对方长停顿导致永远不触发
     assist_transcription_merge_max_sec: float = 12.0
     # 主链路 VAD 单段最长语音（秒），避免面试官连续讲话被攒成超长音频导致远程 ASR 超时
@@ -161,7 +164,10 @@ class AppConfig(BaseModel):
     # 调小可减少短句被误丢（漏听），调大可减少噪声片段送 STT。原硬编码 0.5。
     assist_vad_min_speech_sec: float = 0.3
     # 实时辅助：问句候选组在最后一条有效追问后静默超过该秒数再确认提交
-    assist_asr_confirm_window_sec: float = 0.45
+    assist_asr_confirm_window_sec: float = 0.2
+    # 已确认的问题默认立即派发；可恢复宽限以等待迟到的补充条件。
+    assist_asr_late_constraint_grace_sec: float = Field(default=0.0, ge=0.0, le=3.0)
+    assist_answer_style: Literal['outline', 'detailed'] = 'outline'
     # 实时辅助：候选问句组从第一条有效追问开始的最长等待时间
     assist_asr_group_max_wait_sec: float = 1.2
     # 实时辅助：确认新问句组后是否中断仍在生成的旧 ASR 回答

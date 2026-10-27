@@ -27,6 +27,7 @@ def build_config_payload(cfg) -> dict:
         "whisper_model": cfg.whisper_model,
         "whisper_language": cfg.whisper_language,
         "whisper_preload": cfg.whisper_preload,
+        "stt_fallback_enabled": bool(getattr(cfg, "stt_fallback_enabled", True)),
         "doubao_stt_app_id": cfg.doubao_stt_app_id or "",
         "doubao_stt_access_token": cfg.doubao_stt_access_token or "",
         "doubao_stt_api_key": getattr(cfg, "doubao_stt_api_key", "") or "",
@@ -56,7 +57,7 @@ def build_config_payload(cfg) -> dict:
         "answer_autoscroll_bottom_px": max(4, min(400, getattr(cfg, "answer_autoscroll_bottom_px", 40))),
         "transcription_min_sig_chars": max(1, min(50, getattr(cfg, "transcription_min_sig_chars", 2))),
         "assist_transcription_merge_gap_sec": max(
-            0.0, min(15.0, float(getattr(cfg, "assist_transcription_merge_gap_sec", 2.0) or 0.0))
+            0.0, min(15.0, float(getattr(cfg, "assist_transcription_merge_gap_sec", 0.0) or 0.0))
         ),
         "assist_transcription_merge_max_sec": max(
             1.0, min(120.0, float(getattr(cfg, "assist_transcription_merge_max_sec", 12.0) or 12.0))
@@ -68,12 +69,14 @@ def build_config_payload(cfg) -> dict:
             0.1, min(2.0, float(getattr(cfg, "assist_vad_min_speech_sec", 0.3) or 0.3))
         ),
         "assist_asr_confirm_window_sec": max(
-            0.0, min(5.0, float(getattr(cfg, "assist_asr_confirm_window_sec", 0.45) or 0.0))
+            0.0, min(5.0, float(getattr(cfg, "assist_asr_confirm_window_sec", 0.2) or 0.0))
         ),
         "assist_asr_group_max_wait_sec": max(
             0.2, min(8.0, float(getattr(cfg, "assist_asr_group_max_wait_sec", 1.2) or 1.2))
         ),
         "assist_asr_interrupt_running": bool(getattr(cfg, "assist_asr_interrupt_running", True)),
+        "assist_asr_late_constraint_grace_sec": float(getattr(cfg, "assist_asr_late_constraint_grace_sec", 0.0)),
+        "assist_answer_style": getattr(cfg, "assist_answer_style", "outline"),
         "assist_high_churn_short_answer": bool(getattr(cfg, "assist_high_churn_short_answer", False)),
         "assist_realtime_max_tokens": max(
             256, min(4096, int(getattr(cfg, "assist_realtime_max_tokens", 720) or 720))

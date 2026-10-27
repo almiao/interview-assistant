@@ -3,6 +3,17 @@ const { spawn } = require('child_process');
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
+const { createCompactWindowController } = require('./compactWindow');
+let setMainCompactMode;
+
+// 直接 `node main.js` 时 require('electron') 只返回可执行文件路径，解构出的 app
+// 是 undefined，后面 app.commandLine 会抛难以理解的 TypeError。
+if (!process.versions.electron) {
+  console.error(
+    '[desktop] 请使用 Electron 启动：项目根目录运行 `python start.py --mode desktop`，或在 desktop 目录运行 `npm start`。',
+  );
+  process.exit(1);
+}
 
 // Windows: 透明 BrowserWindow 需要 DWM 硬件加速。
 // 历史遗留 disableHardwareAcceleration() 已移除 ——
@@ -355,6 +366,9 @@ function createWindow() {
     },
   });
 
+  setMainCompactMode = createCompactWindowController(mainWindow, screen, path.join(app.getPath('userData'), 'compact-window.json'));
+  // A renderer reload starts in the full UI; restore matching native geometry.
+  mainWindow.webContents.on('did-start-loading', () => setMainCompactMode(false));
   mainWindow.setContentProtection(true);
 
   // 每次启动清除缓存，确保加载到最新的前端构建（避免设置里识别引擎等不更新）
@@ -647,36 +661,12 @@ function createTray() {
   }
 
   tray = new Tray(icon);
-  tray.setToolTip(APP_DISPLAY_NAME);
-
-  const contextMenu = Menu.buildFromTemplate([
-    { label: '显示窗口', click: () => { mainWindow?.show(); mainWindow?.focus(); } },
-    { label: '隐藏到托盘', click: () => toggleWindow() },
-    { type: 'separator' },
-    {
-      label: '窗口置顶',
-      type: 'checkbox',
-      checked: false,
-      click: (menuItem) => {
-        mainWindow?.setAlwaysOnTop(menuItem.checked, 'floating');
-      },
-    },
-    {
-      label: '屏幕共享隐身',
-      type: 'checkbox',
-      checked: true,
-      click: (menuItem) => {
-        mainWindow?.setContentProtection(menuItem.checked);
-      },
-    },
-    { type: 'separator' },
-    { label: '退出', click: () => { isQuitting = true; app.quit(); } },
-  ]);
-
-  tray.setContextMenu(contextMenu);
-  tray.on('click', () => { mainWindow?.show(); mainWindow?.focus(); });
-  // Windows 双击托盘图标也能显示
-  tray.on('double-click', () => { mainWindow?.show(); mainWindow?.focus(); });
+  // 不挂载原生菜单，避免菜单内容进入屏幕共享画面。
+  if (process.platform === 'darwin') {
+    tray.setPressedImage(icon);
+    tray.setIgnoreDoubleClickEvents(true);
+  }
+  tray.on('click', toggleWindow);
 }
 
 function isFocusOverlayActive() {
@@ -927,6 +917,10 @@ function sendOverlayQuestionCommand(direction) {
 }
 
 ipcMain.handle('hide-window', () => mainWindow?.hide());
+ipcMain.handle('set-compact-mode', (event, enabled) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) throw new Error('Main window required');
+  setMainCompactMode(enabled);
+});
 ipcMain.handle('minimize-window', () => mainWindow?.minimize());
 ipcMain.handle('quit-app', () => { isQuitting = true; app.quit(); });
 ipcMain.handle('show-window', () => { mainWindow?.show(); mainWindow?.focus(); });
@@ -957,15 +951,13 @@ ipcMain.handle('toggle-always-on-top', () => {
 });
 ipcMain.handle('toggle-content-protection', () => {
   if (!mainWindow) return true;
-  const webContents = mainWindow.webContents;
-  const isProtected = mainWindow._contentProtection !== false;
-  mainWindow._contentProtection = !isProtected;
+  const isProtected = mainWindow.isContentProtected();
   mainWindow.setContentProtection(!isProtected);
   return !isProtected;
 });
 ipcMain.handle('get-window-state', () => ({
   alwaysOnTop: mainWindow?.isAlwaysOnTop() ?? false,
-  contentProtection: mainWindow?._contentProtection !== false,
+  contentProtection: mainWindow?.isContentProtected() ?? true,
   visible: mainWindow?.isVisible() ?? false,
 }));
 ipcMain.handle('sync-overlay-window', (_event, payload = {}) => {
@@ -1220,6 +1212,10 @@ app.whenReady().then(async () => {
 
   createWindow();
   createTray();
+  // macOS 通过顶部托盘菜单访问应用，隐藏底部 Dock 图标。
+  if (process.platform === 'darwin') {
+    app.dock.hide();
+  }
   registerShortcuts();
 
   setImmediate(() => {
