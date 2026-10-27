@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, useRef, lazy, Suspense } from 'react'
-import { Settings, SlidersHorizontal, MonitorSmartphone, PanelLeftClose, PanelLeftOpen, Minus, X, ChevronDown } from 'lucide-react'
+import { Settings, SlidersHorizontal, MonitorSmartphone, PanelLeftClose, PanelLeftOpen, Minus, X, ChevronDown, Minimize2 } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { useInterviewStore, type AppConfig } from '@/stores/configStore'
 import { useUiPrefsStore } from '@/stores/uiPrefsStore'
@@ -12,6 +12,9 @@ import { api } from '@/lib/api'
 import { updateConfigAndRefresh } from '@/lib/configSync'
 import TranscriptionPanel from '@/components/TranscriptionPanel'
 import AnswerPanel from '@/components/AnswerPanel'
+import CompactInterview from '@/components/CompactInterview'
+import AlgorithmScreenButton from '@/components/AlgorithmScreenButton'
+import { useAlgorithmScreen } from '@/hooks/useAlgorithmScreen'
 import ControlBar from '@/components/ControlBar'
 import SettingsDrawer from '@/components/SettingsDrawer'
 import SessionSettingsPopover from '@/components/SessionSettingsPopover'
@@ -35,6 +38,7 @@ const APP_MODE_TABS = [
 
 export default function App() {
   useInterviewWS()
+  const algorithmScreen = useAlgorithmScreen()
   // 精确订阅, 避免 store 任意字段变化(LLM token 流式 / toast 等)触发 App 重渲染
   const { config, toggleSettings, openModelsDrawer } = useInterviewStore(
     useShallow((s) => ({
@@ -52,6 +56,28 @@ export default function App() {
   const currentStreamingId = useInterviewStore((s) => s.currentStreamingId)
   const isExamMode = config?.written_exam_mode === true
   const [mobileTab, setMobileTab] = useState<'transcript' | 'answer'>('transcript')
+  const [compactMode, setCompactMode] = useState(false)
+  const compactChangeRef = useRef(false)
+  const changeCompactMode = useCallback(async (enabled: boolean) => {
+    if (compactChangeRef.current) return
+    compactChangeRef.current = true
+    try {
+      await window.electronAPI?.setCompactMode?.(enabled)
+      setCompactMode(enabled)
+    } catch {
+      useInterviewStore.getState().setToastMessage('切换精简窗口失败，请重试')
+    } finally {
+      compactChangeRef.current = false
+    }
+  }, [])
+  useEffect(() => {
+    if (!compactMode) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') void changeCompactMode(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [compactMode, changeCompactMode])
   const lastMobileStreamingIdRef = useRef<string | null>(null)
   const appMode = useUiPrefsStore((s) => s.appMode)
   const setAppMode = useUiPrefsStore((s) => s.setAppMode)
@@ -264,6 +290,10 @@ export default function App() {
     return <InitErrorScreen initError={initError} />
   }
 
+  if (compactMode) {
+    return <CompactInterview onExit={() => void changeCompactMode(false)} algorithmScreen={algorithmScreen} />
+  }
+
   return (
     <div className="h-screen flex flex-col bg-bg-primary overflow-hidden noise-bg">
       {/* Header — 强制单行不换行, 各按钮文字按宽度阶梯隐藏, 实在不够再让左区横向滚动 */}
@@ -429,6 +459,16 @@ export default function App() {
             />
           </div>
 
+          {appMode === 'assist' && <AlgorithmScreenButton onClick={() => { setMobileTab('answer'); void algorithmScreen.capture() }} busy={algorithmScreen.busy} label={algorithmScreen.label} />}
+          {appMode === 'assist' && (
+            <button
+              type="button"
+              onClick={() => void changeCompactMode(true)}
+              aria-label="进入精简模式"
+              title="精简模式：自动展示当前答案，可自由缩放窗口"
+              className="inline-flex items-center justify-center min-h-[32px] min-w-[32px] p-1.5 rounded-xl hover:bg-bg-tertiary/60 text-text-muted hover:text-accent-blue"
+            ><Minimize2 className="w-4 h-4" /></button>
+          )}
           {appMode === 'assist' && (
             <button
               type="button"

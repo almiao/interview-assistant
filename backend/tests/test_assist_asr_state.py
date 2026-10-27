@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 import sys
+from unittest.mock import Mock
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -188,3 +189,49 @@ def test_late_constraint_tail_is_merged_before_question_flush():
     assert "不要结合项目" in question_text
     assert state.pending_group is not None
     assert state.pending_group.utterances == ["pipeline 里怎么做 retry 和 timeout"]
+
+
+def test_question_mark_evidence_survives_normalization_and_trailing_politeness():
+    """A question followed by thanks used to lose '?' and fail revalidation."""
+    submitted = []
+    clock = [0.0]
+    state = AssistAsrStateMachine(
+        broadcast=lambda _: None,
+        submit_answer_task=lambda task: submitted.append(task) or True,
+        begin_asr_turn=lambda: 1,
+        record_asr_turn=lambda _: None,
+        is_high_churn_submission=lambda *_: False,
+        logger=_Logger(),
+        clock=lambda: clock[0],
+    )
+    cfg = _cfg(transcription_min_sig_chars=13, assist_asr_confirm_window_sec=0.2)
+    state.append_transcription_fragment(
+        cfg, reset_session(), '确认时间后我再重新给您拉个会可以吗？嗯好的好谢谢您。', 0.0,
+    )
+    assert state.pending_group.has_promote is True
+    assert '？' in state.pending_group.utterances[0]
+    clock[0] = 0.21
+    state.try_flush_question_group(cfg, reset_session(), clock[0])
+    assert len(submitted) == 1
+    assert '拉个会可以吗' in submitted[0][0]
+    assert '拉个会可以吗？' in submitted[0][0]
+
+
+def test_discarded_statement_and_backchannel_include_text_and_reason_in_log():
+    logger = Mock()
+    submitted = Mock(return_value=True)
+    state = AssistAsrStateMachine(
+        broadcast=lambda _: None, submit_answer_task=submitted,
+        begin_asr_turn=lambda: 1, record_asr_turn=lambda _: None,
+        is_high_churn_submission=lambda *_: False, logger=logger, clock=lambda: 0.0,
+    )
+    cfg = _cfg()
+    session = reset_session()
+    statement = '这是我们团队日常使用的消息系统'
+    state.handle_auto_detect_asr_text(cfg, session, statement, 'conversation_loopback', 0.0)
+    state.try_flush_question_group(cfg, session, 1.1)
+    state.handle_auto_detect_asr_text(cfg, session, '好的', 'conversation_loopback', 1.2)
+    messages = [call.args[0] % call.args[1:] for call in logger.info.call_args_list]
+    assert any('reason=no_question_evidence' in message and statement in message for message in messages)
+    assert any('reason=backchannel' in message and '好的' in message for message in messages)
+    submitted.assert_not_called()

@@ -18,12 +18,12 @@ def reset_resume():
 
 def _asr_prompt(high_churn: bool = False) -> str:
     return build_system_prompt(
-        mode="asr_realtime", high_churn_short_answer=high_churn
+        mode="asr_realtime", high_churn_short_answer=high_churn, answer_style="detailed"
     )
 
 
 def _manual_prompt() -> str:
-    return build_system_prompt(mode="manual_text")
+    return build_system_prompt(mode="manual_text", answer_style="detailed")
 
 
 # ---- 4.1 intent ladder ---------------------------------------------------

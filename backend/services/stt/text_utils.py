@@ -435,11 +435,15 @@ def is_interview_boilerplate_text(text: str) -> bool:
     return bool(_INTERVIEW_BOILERPLATE.search(normalized))
 
 
-def split_question_like_text(text: str) -> list[str]:
+def split_question_like_text(text: str, *, preserve_punctuation: bool = False) -> list[str]:
     raw = (text or "").strip()
     if not raw:
         return []
-    raw_parts = [p for p in _QUESTION_SPLIT.split(raw) if p and p.strip()]
+    raw_parts = (
+        re.findall(r"[^？?]+[？?]*|[？?]+", raw)
+        if preserve_punctuation
+        else [p for p in _QUESTION_SPLIT.split(raw) if p and p.strip()]
+    )
     if not raw_parts:
         raw_parts = [raw]
     merged: list[str] = []
@@ -448,14 +452,14 @@ def split_question_like_text(text: str) -> list[str]:
         if not stripped:
             continue
         if merged and not _SENTENCE_START_AFTER_SPLIT.match(stripped):
-            merged[-1] = merged[-1] + "？" + stripped
+            merged[-1] = merged[-1] + ("" if preserve_punctuation else "？") + stripped
         else:
             merged.append(stripped)
     out: list[str] = []
     for part in merged:
         subparts = _QUESTION_CONNECTOR_SPLIT.split(part)
         for sub in subparts:
-            cleaned = normalize_transcription_for_analysis(sub)
+            cleaned = _strip_filler_prefix(sub) if preserve_punctuation else normalize_transcription_for_analysis(sub)
             if cleaned:
                 out.append(cleaned)
     deduped: list[str] = []
@@ -554,15 +558,14 @@ def is_viable_asr_question_group(
 def build_asr_question_group_text(texts: list[str], max_items: int = 4) -> str:
     items: list[str] = []
     for text in texts:
-        parts = split_question_like_text(text) or [normalize_transcription_for_analysis(text)]
+        parts = split_question_like_text(text, preserve_punctuation=True) or [text.strip()]
         for part in parts:
             if not part:
                 continue
             kind, cleaned = classify_asr_question_candidate(part, 2)
             if kind == "ignore":
                 continue
-            part = cleaned or part
-            if not items or items[-1] != part:
+            if not items or normalize_transcription_for_analysis(items[-1]) != cleaned:
                 items.append(part)
     items = [it for it in items if len(it) >= 3 or it == items[0]]
     if not items:

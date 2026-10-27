@@ -8,6 +8,62 @@ import json
 import sys
 
 
+def _screen_capture_allowed() -> bool:
+    """macOS 可能在未授权时返回壁纸，必须在实际采集进程内检查。"""
+    if sys.platform != "darwin":
+        return True
+    import ctypes
+    cg = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+    check = getattr(cg, "CGPreflightScreenCaptureAccess", None)
+    if check is None:  # macOS 10.14 及以前没有此权限接口。
+        return True
+    check.argtypes = []
+    check.restype = ctypes.c_bool
+    return bool(check())
+
+
+def _cursor_position():
+    """只读系统鼠标位置；不可用时回退主屏，不新增桌面依赖。"""
+    import ctypes
+    try:
+        if sys.platform == "darwin":
+            class Point(ctypes.Structure):
+                _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
+            cg = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+            cg.CGEventCreate.argtypes = [ctypes.c_void_p]
+            cg.CGEventCreate.restype = ctypes.c_void_p
+            cg.CGEventGetLocation.argtypes = [ctypes.c_void_p]
+            cg.CGEventGetLocation.restype = Point
+            event = cg.CGEventCreate(None)
+            if not event:
+                return None
+            try:
+                point = cg.CGEventGetLocation(event)
+                return point.x, point.y
+            finally:
+                cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+                cf.CFRelease.argtypes = [ctypes.c_void_p]
+                cf.CFRelease(event)
+        if sys.platform == "win32":
+            class Point(ctypes.Structure):
+                _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+            point = Point()
+            if ctypes.windll.user32.GetCursorPos(ctypes.byref(point)):
+                return point.x, point.y
+    except (OSError, AttributeError):
+        pass
+    return None
+
+
+def _current_monitor(monitors: list[dict], position) -> dict:
+    if position is not None:
+        x, y = position
+        for mon in monitors[1:]:
+            if mon["left"] <= x < mon["left"] + mon["width"] and mon["top"] <= y < mon["top"] + mon["height"]:
+                return mon
+    return monitors[1]
+
+
 def _region_for_monitor(mon: dict, kind: str) -> dict:
     """根据 kind 计算主显示器上的截取区域。"""
     left, top = mon["left"], mon["top"]
@@ -80,6 +136,14 @@ def _encode_capture(rgb: bytes, size: tuple[int, int], max_long_edge: int) -> di
 
 
 def main() -> None:
+    if not _screen_capture_allowed():
+        print(
+            "屏幕录制权限未开启，macOS 可能只返回桌面壁纸，无法读取其他应用的题目。"
+            "请前往「系统设置 → 隐私与安全性 → 屏幕与系统音频录制」开启启动本助手的应用权限"
+            "（桌面版通常为 Electron，终端启动时为 Terminal/iTerm 或 Python），然后完全退出并重新启动助手。",
+            file=sys.stderr,
+        )
+        sys.exit(4)
     try:
         import mss
         import mss.tools
@@ -87,7 +151,7 @@ def main() -> None:
         print("mss missing", file=sys.stderr)
         sys.exit(2)
     region_kind = (sys.argv[1] or "left_half").strip() if len(sys.argv) > 1 else "left_half"
-    if region_kind not in ("full", "left_half", "right_half", "top_half", "bottom_half"):
+    if region_kind not in ("current_full", "full", "left_half", "right_half", "top_half", "bottom_half"):
         region_kind = "left_half"
     try:
         max_long_edge = int(sys.argv[2]) if len(sys.argv) > 2 else 1600
@@ -98,8 +162,8 @@ def main() -> None:
             if len(sct.monitors) < 2:
                 print("no monitor", file=sys.stderr)
                 sys.exit(3)
-            mon = sct.monitors[1]
-            region = _region_for_monitor(mon, region_kind)
+            mon = _current_monitor(sct.monitors, _cursor_position()) if region_kind == "current_full" else sct.monitors[1]
+            region = _region_for_monitor(mon, "full" if region_kind == "current_full" else region_kind)
             shot = sct.grab(region)
             payload = _encode_capture(shot.rgb, shot.size, max_long_edge)
     except Exception as e:

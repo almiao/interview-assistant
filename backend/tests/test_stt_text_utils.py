@@ -75,6 +75,19 @@ def test_project_negation_tail_is_candidate_and_kept_in_question_group():
     assert "不要结合项目" in grouped
 
 
+def test_question_group_preserves_asr_punctuation_in_display_text():
+    text = "你说中台，不是金融业务中台吧？哦 OK，那我理解错了。咨询呐！客诉啊？包括告警处理是吧？"
+    grouped = build_asr_question_group_text([text])
+    assert "你说中台，不是金融业务中台吧？" in grouped
+    assert "哦 OK，那我理解错了。咨询呐！客诉啊？" in grouped
+    assert "包括告警处理是吧？" in grouped
+
+
+def test_question_group_deduplication_uses_normalized_text():
+    grouped = build_asr_question_group_text(["Redis 如何保证一致性？", "Redis 如何保证一致性"])
+    assert grouped == "Redis 如何保证一致性？"
+
+
 def test_postprocess_repairs_whisper_boundary_terms_from_tts_replay():
     assert _postprocess("Rose和Skills的区别是什么?") == "rules和Skills的区别是什么?"
     assert _postprocess("Rose和SQL的区别是什么?") == "rules和Skills的区别是什么?"

@@ -43,6 +43,7 @@ type SpeechForm = {
   whisper_model: string
   whisper_language: string
   whisper_preload: boolean
+  stt_fallback_enabled: boolean
   doubao_stt_app_id: string
   doubao_stt_access_token: string
   doubao_stt_api_key: string
@@ -78,6 +79,7 @@ const DEFAULT_SPEECH_FORM: SpeechForm = {
   whisper_model: 'base',
   whisper_language: 'auto',
   whisper_preload: false,
+  stt_fallback_enabled: true,
   doubao_stt_app_id: '',
   doubao_stt_access_token: '',
   doubao_stt_api_key: '',
@@ -114,6 +116,7 @@ function speechFormFromConfig(config: AppConfig): SpeechForm {
     whisper_model: config.whisper_model ?? DEFAULT_SPEECH_FORM.whisper_model,
     whisper_language: config.whisper_language ?? DEFAULT_SPEECH_FORM.whisper_language,
     whisper_preload: config.whisper_preload ?? DEFAULT_SPEECH_FORM.whisper_preload,
+    stt_fallback_enabled: config.stt_fallback_enabled ?? DEFAULT_SPEECH_FORM.stt_fallback_enabled,
     doubao_stt_app_id: config.doubao_stt_app_id ?? DEFAULT_SPEECH_FORM.doubao_stt_app_id,
     doubao_stt_access_token: config.doubao_stt_access_token ?? DEFAULT_SPEECH_FORM.doubao_stt_access_token,
     doubao_stt_api_key: config.doubao_stt_api_key ?? DEFAULT_SPEECH_FORM.doubao_stt_api_key,
@@ -441,12 +444,45 @@ export default function SpeechTab() {
         )}
 
         {form.stt_provider !== 'whisper' && (
-          <Field label="Whisper 降级预加载" hint="默认关闭；开启后启动时后台加载 Whisper（约 300MB 内存），远程 ASR 故障时更快降级">
-            <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-              <input type="checkbox" checked={form.whisper_preload} onChange={(e) => setForm({ ...form, whisper_preload: e.target.checked })} className="rounded border-border text-accent-blue focus:ring-accent-blue/30" />
-              <span className="text-xs text-text-secondary">{form.whisper_preload ? '已启用' : '已关闭'}</span>
-            </label>
-          </Field>
+          <>
+            <Field
+              label="失败时降级到 Whisper"
+              hint="开启（推荐）：远程 ASR 出错或返回空时自动改用本地 Whisper，避免整段漏识别。关闭：只使用所选远程引擎，失败时留空，不会静默换引擎。"
+            >
+              <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={form.stt_fallback_enabled}
+                  onChange={(e) => setForm({ ...form, stt_fallback_enabled: e.target.checked })}
+                  className="rounded border-border text-accent-blue focus:ring-accent-blue/30"
+                />
+                <span className="text-xs text-text-secondary">
+                  {form.stt_fallback_enabled ? '已开启（失败自动换 Whisper）' : '已关闭（只用所选引擎）'}
+                </span>
+              </label>
+            </Field>
+            <Field
+              label="Whisper 降级预加载"
+              hint="默认关闭；开启后启动时后台加载 Whisper（约 300MB 内存），远程 ASR 故障时更快降级"
+            >
+              <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={form.whisper_preload}
+                  onChange={(e) => setForm({ ...form, whisper_preload: e.target.checked })}
+                  disabled={!form.stt_fallback_enabled}
+                  className="rounded border-border text-accent-blue focus:ring-accent-blue/30"
+                />
+                <span className="text-xs text-text-secondary">
+                  {!form.stt_fallback_enabled
+                    ? '降级已关闭，无需预加载'
+                    : form.whisper_preload
+                      ? '已启用'
+                      : '已关闭'}
+                </span>
+              </label>
+            </Field>
+          </>
         )}
 
         <div className="flex items-center gap-3 pt-1">

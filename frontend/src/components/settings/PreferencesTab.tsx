@@ -25,6 +25,7 @@ import { Section, Field, SaveStateBadge, matchSettingsSearch, useAutoSaveSetting
 import NetworkQRCode from './NetworkQRCode'
 import QuickPromptsEditor from './QuickPromptsEditor'
 import GlobalShortcutsEditor from './GlobalShortcutsEditor'
+import DesktopWindowSettings from './DesktopWindowSettings'
 
 function Collapsible({ title, searchTitle, icon, defaultOpen = false, keywords, children }: {
   title: React.ReactNode
@@ -163,6 +164,8 @@ export default function PreferencesTab() {
         </div>
         <SaveStateBadge mode="auto" state={autoSave.state} error={autoSave.error} />
       </div>
+
+      <DesktopWindowSettings />
 
       {/* ── 系统状态 ── */}
       {platformInfo?.needs_virtual_device && (

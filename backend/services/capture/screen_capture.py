@@ -42,7 +42,7 @@ def _capture_payload_to_data_url(raw: str) -> str:
     return f"data:{mime};base64,{data}"
 
 
-def capture_primary_region_data_url(region: str = "left_half", max_long_edge: int = 1600) -> str:
+def capture_primary_region_data_url(region: str = "left_half", max_long_edge: int = 1600, *, follow_cursor: bool = False) -> str:
     """
     在子进程内截取主显示器指定区域，返回 data:image/png;base64,...
     region: full | left_half | right_half | top_half | bottom_half
@@ -62,7 +62,7 @@ def capture_primary_region_data_url(region: str = "left_half", max_long_edge: in
         max_long_edge = 1600
 
     kwargs: dict = {
-        "args": [sys.executable, worker, region, str(max_long_edge)],
+        "args": [sys.executable, worker, "current_full" if follow_cursor else region, str(max_long_edge)],
         "capture_output": True,
         "timeout": 20,
         "stdin": subprocess.DEVNULL,
@@ -86,6 +86,8 @@ def capture_primary_region_data_url(region: str = "left_half", max_long_edge: in
             raise ScreenCaptureError("缺少依赖 mss，请执行: pip install mss")
         if proc.returncode == 3:
             raise ScreenCaptureError("未检测到可用显示器（无图形界面或远程无头环境无法截屏）")
+        if proc.returncode == 4:
+            raise ScreenCaptureError(err)
         raise ScreenCaptureError(
             "截屏失败。macOS 请在「隐私与安全性 → 屏幕录制」中允许运行后端的终端或 Python。"
             f" 详情: {err}"
@@ -95,6 +97,11 @@ def capture_primary_region_data_url(region: str = "left_half", max_long_edge: in
     if len(raw) < 100:
         raise ScreenCaptureError("截屏数据异常")
     return _capture_payload_to_data_url(raw)
+
+
+def capture_algorithm_screen_data_url() -> str:
+    """全屏识题不受旧截图区域设置影响；保留较高分辨率以便识别题面小字。"""
+    return capture_primary_region_data_url("full", max_long_edge=3200, follow_cursor=True)
 
 
 def capture_primary_left_half_data_url() -> str:

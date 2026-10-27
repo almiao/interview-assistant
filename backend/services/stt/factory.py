@@ -72,7 +72,7 @@ def _circuit_record_failure(is_timeout: bool = False, is_auth: bool = False, sco
             if circuit_scope == "interviewer":
                 _circuit_open_until = open_until
             _log.warning(
-                "STT circuit OPEN scope=%s after %d failures (timeout=%s auth=%s), fallback for %.0fs",
+                "STT circuit OPEN scope=%s after %d failures (timeout=%s auth=%s), cooldown %.0fs",
                 circuit_scope, failures, is_timeout, is_auth, cooldown,
             )
 
@@ -383,6 +383,9 @@ def preload_whisper_fallback() -> None:
     """Pre-load whisper model in background so fallback is instant when needed."""
     from core.config import get_config
     cfg = get_config()
+    if not getattr(cfg, "stt_fallback_enabled", True):
+        _log.info("Whisper preload skipped: stt_fallback_enabled=false")
+        return
     if not cfg.whisper_preload:
         _log.info("Whisper preload disabled by config")
         return
@@ -530,8 +533,11 @@ def transcribe_with_fallback(
     audio_sec = len(audio) / sample_rate if sample_rate and len(audio) else 0.0
     circuit_scope = (scope or "interviewer").strip() or "interviewer"
     fallback_event_type = "candidate_stt_fallback" if circuit_scope == "candidate" else "stt_fallback"
+    fallback_enabled = bool(getattr(cfg, "stt_fallback_enabled", True))
 
-    if is_remote and _call_circuit_open(circuit_scope):
+    # 降级关闭时熔断器没有可用的补救动作（唯一动作就是切 whisper），
+    # 因此不要因为熔断而跳过主引擎，直接继续尝试远程识别。
+    if is_remote and fallback_enabled and _call_circuit_open(circuit_scope):
         _log.info("STT circuit open, using whisper fallback directly")
         broadcast({"type": fallback_event_type, "scope": circuit_scope, "from": selected_provider, "to": "whisper", "reason": "circuit_open"})
         whisper_loaded = _is_whisper_engine_loaded(whisper_model, whisper_language)
@@ -575,6 +581,7 @@ def transcribe_with_fallback(
             language=whisper_language,
         )
     last_err: Optional[Exception] = None
+    empty_remote_text = False
 
     is_timeout_err = False
     is_auth_err = False
@@ -668,6 +675,7 @@ def transcribe_with_fallback(
                     )
                     return ""
                 last_err = RuntimeError(f"{selected_provider} 返回空文本")
+                empty_remote_text = True
                 break
             if is_remote:
                 _call_circuit_reset(circuit_scope)
@@ -687,8 +695,21 @@ def transcribe_with_fallback(
             else:
                 _log.error("STT %s attempt %d failed: %s", selected_provider, attempt + 1, e)
 
-    if is_remote and last_err is not None:
+    # 空文本通常表示这段音频里没有说话（或只有噪声），不是远端引擎故障。
+    # 把空文本计入熔断会让静音片段被误判成“豆包不可用”，随后 60 秒内的
+    # 真实语音全部被推给 whisper 兜底。
+    if is_remote and last_err is not None and not empty_remote_text:
         _call_circuit_record_failure(circuit_scope, is_timeout=is_timeout_err, is_auth=is_auth_err)
+
+    if is_remote and not fallback_enabled:
+        if last_err is not None:
+            _log.warning(
+                "STT %s failed and whisper fallback is disabled (scope=%s): %s",
+                selected_provider,
+                circuit_scope,
+                last_err,
+            )
+        return ""
 
     if is_remote:
         _log.warning("STT fallback to whisper (primary=%s err=%s)", selected_provider, last_err)
